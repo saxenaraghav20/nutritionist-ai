@@ -74,7 +74,7 @@ if submit:
             image_data = input_image_setup(uploaded_file)
             
             # 2. Call Gemini
-            with st.spinner("Analyzing with Gemini 2.5..."):
+            with st.spinner("Analyzing..."):
                 response = get_gemini_response(system_prompt, image_data, user_input)
                 
                 # 3. Show Result
