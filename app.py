@@ -16,7 +16,7 @@ genai.configure(api_key=api_key)
 # The model now takes the system prompt, user text, and the image
 def get_gemini_response(system_prompt, user_prompt, image):
     # Use the Gemini 1.5 Flash model
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-pro')
     # The model now receives the system instructions, the image, AND the user's text
     response = model.generate_content([system_prompt, image, user_prompt])
     return response.text
