@@ -18,7 +18,8 @@ def get_gemini_response(system_prompt, user_prompt, image):
     # Use the Gemini 1.5 Flash model
     model = genai.GenerativeModel('gemini-1.5-flash')
     # The model now receives the system instructions, the image, AND the user's text
-    response = model.generate_content([system_prompt, image, user_prompt])
+    # Notice the [0] after image
+        response = model.generate_content([system_prompt, image[0], user_prompt])
     return response.text
 
 # --- STREAMLIT APP INTERFACE ---
