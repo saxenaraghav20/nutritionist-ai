@@ -31,7 +31,7 @@ def input_image_setup(uploaded_file):
 # --- GEMINI API CALL ---
 def get_gemini_response(input_prompt, image_data, user_prompt):
     # Using 'gemini-1.5-flash' as it is faster and more stable for this use case
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-pro')
     
     # The model expects a list containing the prompt and the image data dictionary
     response = model.generate_content([input_prompt, image_data[0], user_prompt])
