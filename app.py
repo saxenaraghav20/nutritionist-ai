@@ -3,6 +3,7 @@ import google.generativeai as genai
 import os
 from dotenv import load_dotenv
 from PIL import Image
+from google.generativeai.types import GenerationConfig # <-- New Import for consistency
 
 # Load environment variables
 load_dotenv()
@@ -29,18 +30,29 @@ def input_image_setup(uploaded_file):
 
 # --- GEMINI API CALL ---
 def get_gemini_response(input_prompt, image_data, user_prompt):
-    # UPDATED: Using the model from your available list
+    # 1. Use the Flash 2.5 Model
     model = genai.GenerativeModel('models/gemini-2.5-flash')
     
-    # The model expects a list containing the prompt and the image data dictionary
-    response = model.generate_content([input_prompt, image_data[0], user_prompt])
+    # 2. Set the Configuration for Deterministic (Consistent) Results
+    config = GenerationConfig(
+        temperature=0,          # 0 = Scientific/Strict (No randomness)
+        top_p=1,                # 1 = Consider all probable tokens
+        top_k=32,               # Limit to top 32 tokens
+        max_output_tokens=4096, # Allow for long, detailed responses
+    )
+    
+    # 3. Call the model with the config
+    response = model.generate_content(
+        [input_prompt, image_data[0], user_prompt], 
+        generation_config=config 
+    )
     return response.text
 
 # --- STREAMLIT APP CONFIG ---
 st.set_page_config(page_title="AI Nutritionist App")
 
 st.header("AI Nutritionist App 📸")
-st.write("Upload a photo of your meal for a nutritional analysis!")
+st.write("Upload a photo of your meal for a consistent nutritional analysis!")
 
 # System Prompt
 system_prompt = """
@@ -74,7 +86,7 @@ if submit:
             image_data = input_image_setup(uploaded_file)
             
             # 2. Call Gemini
-            with st.spinner("Analyzing..."):
+            with st.spinner("Analyzing with Gemini 2.5..."):
                 response = get_gemini_response(system_prompt, image_data, user_input)
                 
                 # 3. Show Result
