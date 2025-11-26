@@ -8,68 +8,55 @@ from transformers import pipeline
 # Load environment variables
 load_dotenv()
 
-# --- CONFIGURATION (The "Engineering" Part) ---
-# You must set these in your .env file or Streamlit Secrets!
-NUTRITIONIX_APP_ID = os.getenv("NUTRITIONIX_APP_ID")
-NUTRITIONIX_API_KEY = os.getenv("NUTRITIONIX_API_KEY")
-EDAMAM_APP_ID = os.getenv("EDAMAM_APP_ID")
-EDAMAM_APP_KEY = os.getenv("EDAMAM_APP_KEY")
+# --- CONFIGURATION ---
+# Get your free key from: https://calorieninjas.com/api
+CALORIE_NINJAS_API_KEY = os.getenv("CALORIE_NINJAS_API_KEY")
 
 # --- 1. THE EYES: Computer Vision Model ---
-# We use a specific model trained on the "Food-101" dataset.
-# This runs LOCALLY (or on the server), not via an API call to Google.
+# This downloads a ~300MB model specifically for food recognition.
+# It runs LOCALLY on the Streamlit server (Free).
 @st.cache_resource
 def load_image_model():
-    # Downloads a ~300MB model specifically for food recognition
     classifier = pipeline("image-classification", model="nateraw/food")
     return classifier
 
-# --- 2. THE BRAIN: Nutritionix API ---
-# We send the detected label (e.g., "hamburger") to get scientific facts.
+# --- 2. THE BRAIN: CalorieNinjas API ---
+# No Credit Card required. 10k calls/month free.
 def get_calories(food_name):
-    endpoint = "https://trackapi.nutritionix.com/v2/natural/nutrients"
-    headers = {
-        "x-app-id": NUTRITIONIX_APP_ID,
-        "x-app-key": NUTRITIONIX_API_KEY,
-        "Content-Type": "application/json"
-    }
-    # We default to "1 serving" to get standard data
-    query = {"query": f"1 serving of {food_name}"}
+    api_url = f'https://api.calorieninjas.com/v1/nutrition?query={food_name}'
+    headers = {'X-Api-Key': CALORIE_NINJAS_API_KEY}
     
     try:
-        response = requests.post(endpoint, headers=headers, json=query)
+        response = requests.get(api_url, headers=headers)
         if response.status_code == 200:
-            data = response.json()['foods'][0]
-            return {
-                "calories": data['nf_calories'],
-                "protein": data['nf_protein'],
-                "carbs": data['nf_total_carbohydrate'],
-                "fats": data['nf_total_fat']
-            }
-        else:
-            return None
-    except:
+            data = response.json()
+            if len(data['items']) > 0:
+                item = data['items'][0]
+                return {
+                    "name": item['name'],
+                    "calories": item['calories'],
+                    "protein": item['protein_g'],
+                    "carbs": item['carbohydrates_total_g'],
+                    "fats": item['fat_total_g']
+                }
+        return None
+    except Exception as e:
         return None
 
-# --- 3. THE CHEF: Edamam Recipe API ---
-# We search a recipe database using the detected label.
+# --- 3. THE CHEF: TheMealDB API ---
+# Public Test Key '1' is free for educational use.
 def get_recipes(food_name):
-    url = f"https://api.edamam.com/search?q={food_name}&app_id={EDAMAM_APP_ID}&app_key={EDAMAM_APP_KEY}&to=3"
+    # Search for meals by name
+    url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={food_name}"
     
     try:
         response = requests.get(url)
         if response.status_code == 200:
             data = response.json()
-            recipes = []
-            for hit in data['hits']:
-                r = hit['recipe']
-                recipes.append({
-                    "label": r['label'],
-                    "url": r['url'],
-                    "image": r['image'],
-                    "calories": round(r['calories'] / r['yield']) # Per serving
-                })
-            return recipes
+            meals = data.get('meals')
+            if meals:
+                # Return the top 3 recipes
+                return meals[:3]
         return []
     except:
         return []
@@ -78,17 +65,22 @@ def get_recipes(food_name):
 st.set_page_config(page_title="Smart Nutrition Analyzer", layout="wide")
 
 st.title("🥗 System-Integrated Nutrition Analyzer")
-st.caption("Powered by HuggingFace Vision, Nutritionix API, and Edamam API")
+st.caption("Powered by HuggingFace (Vision), CalorieNinjas (Facts), and TheMealDB (Recipes)")
 
-# Sidebar for controls
+# Sidebar for architecture info
 with st.sidebar:
-    st.header("Project Architecture")
+    st.header("System Architecture")
     st.markdown("""
-    This app demonstrates a **3-stage pipeline**:
-    1. **Vision:** `nateraw/food` (ViT) identifies the food.
-    2. **Data:** `Nutritionix` fetches nutritional facts.
-    3. **Search:** `Edamam` retrieves relevant recipes.
+    This app uses a **Modular Pipeline**:
+    1. **Vision:** `ViT Model` (Local AI) identifies the food.
+    2. **Logic:** `CalorieNinjas API` fetches nutritional data.
+    3. **Search:** `TheMealDB API` retrieves recipes.
     """)
+    
+    # Check if API Key is present
+    if not CALORIE_NINJAS_API_KEY:
+        st.error("⚠️ Missing API Key!")
+        st.info("Get your free key at calorieninjas.com and add it to Secrets as `CALORIE_NINJAS_API_KEY`.")
 
 uploaded_file = st.file_uploader("Upload a food image...", type=["jpg", "jpeg", "png"])
 
@@ -98,27 +90,27 @@ if uploaded_file is not None:
     st.image(image, caption="Uploaded Image", width=400)
     
     if st.button("Analyze Image"):
+        # STEP 1: VISION
         with st.spinner("Step 1: Running Computer Vision Model..."):
-            # Load model and predict
             classifier = load_image_model()
             predictions = classifier(image)
             
-            # Get the top prediction
+            # Get top prediction
             top_food = predictions[0]['label']
             confidence = predictions[0]['score']
             
-            # Fix label format (e.g. "hamburger" instead of "hamburger_steak")
+            # Clean up label (e.g. "hamburger_" -> "hamburger")
             food_label = top_food.replace("_", " ")
         
         st.success(f"✅ **Identification:** I am {confidence*100:.1f}% sure this is **{food_label.title()}**.")
         
-        # Create columns for the next steps
+        # Create columns for details
         col1, col2 = st.columns(2)
         
-        # Step 2: Get Nutrition
+        # STEP 2: NUTRITION
         with col1:
             st.subheader(f"📊 Nutritional Facts ({food_label.title()})")
-            with st.spinner("Step 2: Querying Nutritionix Database..."):
+            with st.spinner("Step 2: Querying CalorieNinjas..."):
                 nutrition = get_calories(food_label)
                 
                 if nutrition:
@@ -127,18 +119,19 @@ if uploaded_file is not None:
                     st.write(f"**Carbs:** {nutrition['carbs']}g")
                     st.write(f"**Fats:** {nutrition['fats']}g")
                 else:
-                    st.error("Could not fetch data from Nutritionix.")
+                    st.warning("No specific nutrition data found for this item.")
 
-        # Step 3: Get Recipes
+        # STEP 3: RECIPES
         with col2:
             st.subheader(f"👨‍🍳 Recipes for {food_label.title()}")
-            with st.spinner("Step 3: Searching Edamam Recipe Index..."):
+            with st.spinner("Step 3: Searching TheMealDB..."):
                 recipes = get_recipes(food_label)
                 
                 if recipes:
                     for r in recipes:
-                        with st.expander(f"{r['label']} ({r['calories']} kcal)"):
-                            st.image(r['image'], width=100)
-                            st.markdown(f"[View Recipe Instructions]({r['url']})")
+                        with st.expander(f"{r['strMeal']}"):
+                            st.image(r['strMealThumb'], width=150)
+                            st.write(f"**Category:** {r['strCategory']}")
+                            st.markdown(f"[View Instructions]({r['strSource']})")
                 else:
-                    st.info("No recipes found for this item.")
+                    st.info("No recipes found for this specific dish.")
