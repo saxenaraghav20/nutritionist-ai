@@ -1,124 +1,144 @@
 import streamlit as st
-import google.generativeai as genai
+import requests
 import os
 from dotenv import load_dotenv
 from PIL import Image
-from google.generativeai.types import GenerationConfig
+from transformers import pipeline
 
 # Load environment variables
 load_dotenv()
 
-# Configure the API key
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+# --- CONFIGURATION (The "Engineering" Part) ---
+# You must set these in your .env file or Streamlit Secrets!
+NUTRITIONIX_APP_ID = os.getenv("NUTRITIONIX_APP_ID")
+NUTRITIONIX_API_KEY = os.getenv("NUTRITIONIX_API_KEY")
+EDAMAM_APP_ID = os.getenv("EDAMAM_APP_ID")
+EDAMAM_APP_KEY = os.getenv("EDAMAM_APP_KEY")
 
-# --- HELPER FUNCTION TO PROCESS IMAGE ---
-def input_image_setup(uploaded_file):
-    if uploaded_file is not None:
-        bytes_data = uploaded_file.getvalue()
-        image_parts = [
-            {
-                "mime_type": uploaded_file.type,
-                "data": bytes_data
+# --- 1. THE EYES: Computer Vision Model ---
+# We use a specific model trained on the "Food-101" dataset.
+# This runs LOCALLY (or on the server), not via an API call to Google.
+@st.cache_resource
+def load_image_model():
+    # Downloads a ~300MB model specifically for food recognition
+    classifier = pipeline("image-classification", model="nateraw/food")
+    return classifier
+
+# --- 2. THE BRAIN: Nutritionix API ---
+# We send the detected label (e.g., "hamburger") to get scientific facts.
+def get_calories(food_name):
+    endpoint = "https://trackapi.nutritionix.com/v2/natural/nutrients"
+    headers = {
+        "x-app-id": NUTRITIONIX_APP_ID,
+        "x-app-key": NUTRITIONIX_API_KEY,
+        "Content-Type": "application/json"
+    }
+    # We default to "1 serving" to get standard data
+    query = {"query": f"1 serving of {food_name}"}
+    
+    try:
+        response = requests.post(endpoint, headers=headers, json=query)
+        if response.status_code == 200:
+            data = response.json()['foods'][0]
+            return {
+                "calories": data['nf_calories'],
+                "protein": data['nf_protein'],
+                "carbs": data['nf_total_carbohydrate'],
+                "fats": data['nf_total_fat']
             }
-        ]
-        return image_parts
-    else:
-        raise FileNotFoundError("No file uploaded")
+        else:
+            return None
+    except:
+        return None
 
-# --- GEMINI API CALL (Generic) ---
-def get_gemini_response(input_prompt, image_data, user_prompt):
-    model = genai.GenerativeModel('models/gemini-2.5-flash')
+# --- 3. THE CHEF: Edamam Recipe API ---
+# We search a recipe database using the detected label.
+def get_recipes(food_name):
+    url = f"https://api.edamam.com/search?q={food_name}&app_id={EDAMAM_APP_ID}&app_key={EDAMAM_APP_KEY}&to=3"
     
-    # Configuration for consistent results
-    config = GenerationConfig(
-        temperature=0,
-        top_p=1,
-        top_k=32,
-        max_output_tokens=4096,
-    )
-    
-    response = model.generate_content(
-        [input_prompt, image_data[0], user_prompt], 
-        generation_config=config 
-    )
-    return response.text
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            recipes = []
+            for hit in data['hits']:
+                r = hit['recipe']
+                recipes.append({
+                    "label": r['label'],
+                    "url": r['url'],
+                    "image": r['image'],
+                    "calories": round(r['calories'] / r['yield']) # Per serving
+                })
+            return recipes
+        return []
+    except:
+        return []
 
-# --- STREAMLIT APP CONFIG ---
-st.set_page_config(page_title="AI Nutritionist App")
+# --- STREAMLIT APP UI ---
+st.set_page_config(page_title="Smart Nutrition Analyzer", layout="wide")
 
-st.header("AI Nutritionist App 📸")
-st.write("Upload a photo of your meal to track calories or get recipe ideas!")
+st.title("🥗 System-Integrated Nutrition Analyzer")
+st.caption("Powered by HuggingFace Vision, Nutritionix API, and Edamam API")
 
-# --- PROMPTS ---
+# Sidebar for controls
+with st.sidebar:
+    st.header("Project Architecture")
+    st.markdown("""
+    This app demonstrates a **3-stage pipeline**:
+    1. **Vision:** `nateraw/food` (ViT) identifies the food.
+    2. **Data:** `Nutritionix` fetches nutritional facts.
+    3. **Search:** `Edamam` retrieves relevant recipes.
+    """)
 
-# Prompt 1: Calorie Analysis
-nutrition_prompt = """
-You are an expert nutritionist. A user will provide you with an image of a meal.
-Your task is to analyze the food items in the image and calculate the total calories.
-
-Please identify each food item, estimate its quantity, and list its
-estimated calorie count. Finally, provide a total calorie estimate.
-"""
-
-# Prompt 2: Recipe Recommendations
-recipe_prompt = """
-You are a talented chef and nutritionist. 
-Look at the ingredients visible in the provided image. 
-Suggest 3 HEALTHY and delicious recipes that can be made using these primary ingredients.
-
-For each recipe, provide:
-1. Recipe Name
-2. List of Ingredients (mark which ones are from the image)
-3. Step-by-step Instructions
-4. Why it is healthy (1 sentence)
-
-Format the output clearly so it is easy to read.
-"""
-
-# --- UI LAYOUT ---
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-image_Data = ""
+uploaded_file = st.file_uploader("Upload a food image...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
+    # 1. Show the image
     image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Meal.", use_container_width=True)
+    st.image(image, caption="Uploaded Image", width=400)
     
-    # Process image once
-    image_data = input_image_setup(uploaded_file)
-
-# User input
-user_input = st.text_input("Add details (e.g., 'I prefer spicy food'):")
-
-# Create two columns for the buttons
-col1, col2 = st.columns(2)
-
-with col1:
-    analyze_btn = st.button("🔥 Calculate Calories")
-
-with col2:
-    recipe_btn = st.button("👨‍🍳 Get Healthy Recipes")
-
-# --- LOGIC ---
-
-# 1. Calorie Calculation Logic
-if analyze_btn:
-    if uploaded_file is not None:
-        with st.spinner("Analyzing calories..."):
-            response = get_gemini_response(nutrition_prompt, image_data, user_input)
-            st.subheader("Nutritional Analysis:")
-            st.write(response)
-    else:
-        st.warning("Please upload an image first.")
-
-# 2. Recipe Recommendation Logic
-if recipe_btn:
-    if uploaded_file is not None:
-        with st.spinner("Chef AI is thinking of recipes..."):
-            response = get_gemini_response(recipe_prompt, image_data, user_input)
+    if st.button("Analyze Image"):
+        with st.spinner("Step 1: Running Computer Vision Model..."):
+            # Load model and predict
+            classifier = load_image_model()
+            predictions = classifier(image)
             
-            st.subheader("Recommended Healthy Recipes:")
-            # We use an expander to show the full details cleanly
-            with st.expander("View Recipes", expanded=True):
-                st.write(response)
-    else:
-        st.warning("Please upload an image first.")
+            # Get the top prediction
+            top_food = predictions[0]['label']
+            confidence = predictions[0]['score']
+            
+            # Fix label format (e.g. "hamburger" instead of "hamburger_steak")
+            food_label = top_food.replace("_", " ")
+        
+        st.success(f"✅ **Identification:** I am {confidence*100:.1f}% sure this is **{food_label.title()}**.")
+        
+        # Create columns for the next steps
+        col1, col2 = st.columns(2)
+        
+        # Step 2: Get Nutrition
+        with col1:
+            st.subheader(f"📊 Nutritional Facts ({food_label.title()})")
+            with st.spinner("Step 2: Querying Nutritionix Database..."):
+                nutrition = get_calories(food_label)
+                
+                if nutrition:
+                    st.metric("Calories", f"{nutrition['calories']} kcal")
+                    st.write(f"**Protein:** {nutrition['protein']}g")
+                    st.write(f"**Carbs:** {nutrition['carbs']}g")
+                    st.write(f"**Fats:** {nutrition['fats']}g")
+                else:
+                    st.error("Could not fetch data from Nutritionix.")
+
+        # Step 3: Get Recipes
+        with col2:
+            st.subheader(f"👨‍🍳 Recipes for {food_label.title()}")
+            with st.spinner("Step 3: Searching Edamam Recipe Index..."):
+                recipes = get_recipes(food_label)
+                
+                if recipes:
+                    for r in recipes:
+                        with st.expander(f"{r['label']} ({r['calories']} kcal)"):
+                            st.image(r['image'], width=100)
+                            st.markdown(f"[View Recipe Instructions]({r['url']})")
+                else:
+                    st.info("No recipes found for this item.")
