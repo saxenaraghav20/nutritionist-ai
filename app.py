@@ -31,7 +31,7 @@ def get_gemini_response(input_prompt, image_data, user_prompt):
     
     # Configuration for consistent results
     config = GenerationConfig(
-        temperature=0.1,        # Slight creativity allowed for recipes
+        temperature=0,
         top_p=1,
         top_k=32,
         max_output_tokens=4096,
