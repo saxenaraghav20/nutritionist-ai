@@ -1,137 +1,125 @@
 import streamlit as st
-import requests
+import google.generativeai as genai
 import os
 from dotenv import load_dotenv
 from PIL import Image
-from transformers import pipeline
+from google.generativeai.types import GenerationConfig
 
 # Load environment variables
 load_dotenv()
 
-# --- CONFIGURATION ---
-# Get your free key from: https://calorieninjas.com/api
-CALORIE_NINJAS_API_KEY = os.getenv("CALORIE_NINJAS_API_KEY")
+# Configure the API key
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# --- 1. THE EYES: Computer Vision Model ---
-# This downloads a ~300MB model specifically for food recognition.
-# It runs LOCALLY on the Streamlit server (Free).
-@st.cache_resource
-def load_image_model():
-    classifier = pipeline("image-classification", model="nateraw/food")
-    return classifier
+# --- HELPER FUNCTION TO PROCESS IMAGE ---
+def input_image_setup(uploaded_file):
+    if uploaded_file is not None:
+        bytes_data = uploaded_file.getvalue()
+        image_parts = [
+            {
+                "mime_type": uploaded_file.type,
+                "data": bytes_data
+            }
+        ]
+        return image_parts
+    else:
+        raise FileNotFoundError("No file uploaded")
 
-# --- 2. THE BRAIN: CalorieNinjas API ---
-# No Credit Card required. 10k calls/month free.
-def get_calories(food_name):
-    api_url = f'https://api.calorieninjas.com/v1/nutrition?query={food_name}'
-    headers = {'X-Api-Key': CALORIE_NINJAS_API_KEY}
+# --- GEMINI API CALL (Generic) ---
+def get_gemini_response(input_prompt, image_data, user_prompt):
+    # Using the 2.5 Flash model which worked for your key
+    model = genai.GenerativeModel('models/gemini-2.5-flash')
     
-    try:
-        response = requests.get(api_url, headers=headers)
-        if response.status_code == 200:
-            data = response.json()
-            if len(data['items']) > 0:
-                item = data['items'][0]
-                return {
-                    "name": item['name'],
-                    "calories": item['calories'],
-                    "protein": item['protein_g'],
-                    "carbs": item['carbohydrates_total_g'],
-                    "fats": item['fat_total_g']
-                }
-        return None
-    except Exception as e:
-        return None
-
-# --- 3. THE CHEF: TheMealDB API ---
-# Public Test Key '1' is free for educational use.
-def get_recipes(food_name):
-    # Search for meals by name
-    url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={food_name}"
+    # Configuration for consistent results (Temperature = 0 for facts)
+    config = GenerationConfig(
+        temperature=0.1,        # Low temperature = Less hallucination
+        top_p=1,
+        top_k=32,
+        max_output_tokens=4096,
+    )
     
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            data = response.json()
-            meals = data.get('meals')
-            if meals:
-                # Return the top 3 recipes
-                return meals[:3]
-        return []
-    except:
-        return []
+    response = model.generate_content(
+        [input_prompt, image_data[0], user_prompt], 
+        generation_config=config 
+    )
+    return response.text
 
-# --- STREAMLIT APP UI ---
-st.set_page_config(page_title="Smart Nutrition Analyzer", layout="wide")
+# --- STREAMLIT APP CONFIG ---
+st.set_page_config(page_title="AI Nutritionist App")
 
-st.title("🥗 System-Integrated Nutrition Analyzer")
-st.caption("Powered by HuggingFace (Vision), CalorieNinjas (Facts), and TheMealDB (Recipes)")
+st.header("AI Nutritionist App 📸")
+st.write("Upload a photo of your meal to track calories or get recipe ideas!")
 
-# Sidebar for architecture info
-with st.sidebar:
-    st.header("System Architecture")
-    st.markdown("""
-    This app uses a **Modular Pipeline**:
-    1. **Vision:** `ViT Model` (Local AI) identifies the food.
-    2. **Logic:** `CalorieNinjas API` fetches nutritional data.
-    3. **Search:** `TheMealDB API` retrieves recipes.
-    """)
-    
-    # Check if API Key is present
-    if not CALORIE_NINJAS_API_KEY:
-        st.error("⚠️ Missing API Key!")
-        st.info("Get your free key at calorieninjas.com and add it to Secrets as `CALORIE_NINJAS_API_KEY`.")
+# --- PROMPTS ---
 
-uploaded_file = st.file_uploader("Upload a food image...", type=["jpg", "jpeg", "png"])
+# Prompt 1: Calorie Analysis
+nutrition_prompt = """
+You are an expert nutritionist. A user will provide you with an image of a meal.
+Your task is to analyze the food items in the image and calculate the total calories.
+
+Please identify each food item, estimate its quantity, and list its
+estimated calorie count. Finally, provide a total calorie estimate.
+"""
+
+# Prompt 2: Recipe Recommendations
+recipe_prompt = """
+You are a talented chef and nutritionist. 
+Look at the ingredients visible in the provided image. 
+Suggest 3 HEALTHY and delicious recipes that can be made using these primary ingredients.
+
+For each recipe, provide:
+1. Recipe Name
+2. List of Ingredients (mark which ones are from the image)
+3. Step-by-step Instructions
+4. Why it is healthy (1 sentence)
+
+Format the output clearly so it is easy to read.
+"""
+
+# --- UI LAYOUT ---
+uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+image_Data = ""
 
 if uploaded_file is not None:
-    # 1. Show the image
     image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Image", width=400)
+    st.image(image, caption="Uploaded Meal.", use_container_width=True)
     
-    if st.button("Analyze Image"):
-        # STEP 1: VISION
-        with st.spinner("Step 1: Running Computer Vision Model..."):
-            classifier = load_image_model()
-            predictions = classifier(image)
-            
-            # Get top prediction
-            top_food = predictions[0]['label']
-            confidence = predictions[0]['score']
-            
-            # Clean up label (e.g. "hamburger_" -> "hamburger")
-            food_label = top_food.replace("_", " ")
-        
-        st.success(f"✅ **Identification:** I am {confidence*100:.1f}% sure this is **{food_label.title()}**.")
-        
-        # Create columns for details
-        col1, col2 = st.columns(2)
-        
-        # STEP 2: NUTRITION
-        with col1:
-            st.subheader(f"📊 Nutritional Facts ({food_label.title()})")
-            with st.spinner("Step 2: Querying CalorieNinjas..."):
-                nutrition = get_calories(food_label)
-                
-                if nutrition:
-                    st.metric("Calories", f"{nutrition['calories']} kcal")
-                    st.write(f"**Protein:** {nutrition['protein']}g")
-                    st.write(f"**Carbs:** {nutrition['carbs']}g")
-                    st.write(f"**Fats:** {nutrition['fats']}g")
-                else:
-                    st.warning("No specific nutrition data found for this item.")
+    # Process image once
+    image_data = input_image_setup(uploaded_file)
 
-        # STEP 3: RECIPES
-        with col2:
-            st.subheader(f"👨‍🍳 Recipes for {food_label.title()}")
-            with st.spinner("Step 3: Searching TheMealDB..."):
-                recipes = get_recipes(food_label)
-                
-                if recipes:
-                    for r in recipes:
-                        with st.expander(f"{r['strMeal']}"):
-                            st.image(r['strMealThumb'], width=150)
-                            st.write(f"**Category:** {r['strCategory']}")
-                            st.markdown(f"[View Instructions]({r['strSource']})")
-                else:
-                    st.info("No recipes found for this specific dish.")
+# User input
+user_input = st.text_input("Add details (e.g., 'I prefer spicy food'):")
+
+# Create two columns for the buttons
+col1, col2 = st.columns(2)
+
+with col1:
+    analyze_btn = st.button("🔥 Calculate Calories")
+
+with col2:
+    recipe_btn = st.button("👨‍🍳 Get Healthy Recipes")
+
+# --- LOGIC ---
+
+# 1. Calorie Calculation Logic
+if analyze_btn:
+    if uploaded_file is not None:
+        with st.spinner("Analyzing calories..."):
+            response = get_gemini_response(nutrition_prompt, image_data, user_input)
+            st.subheader("Nutritional Analysis:")
+            st.write(response)
+    else:
+        st.warning("Please upload an image first.")
+
+# 2. Recipe Recommendation Logic
+if recipe_btn:
+    if uploaded_file is not None:
+        with st.spinner("Chef AI is thinking of recipes..."):
+            response = get_gemini_response(recipe_prompt, image_data, user_input)
+            
+            st.subheader("Recommended Healthy Recipes:")
+            # We use an expander to show the full details cleanly
+            with st.expander("View Recipes", expanded=True):
+                st.write(response)
+    else:
+        st.warning("Please upload an image first.")
